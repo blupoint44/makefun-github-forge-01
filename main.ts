@@ -59,10 +59,7 @@ async function waitForDone(baseUrl: string): Promise<void> {
       // Transient polling failures are expected; keep waiting.
     }
     if (Date.now() > deadline) return;
-    // Poll once a second, not four times: each poll opens a fresh connection
-    // and competes with the timed workloads for the same small CPU budget,
-    // and a one-second exit latency after /done is harmless.
-    await sleep(1_000);
+    await sleep(250);
   }
 }
 
@@ -84,15 +81,7 @@ async function main(): Promise<void> {
   }
   await registerWithRetry(envUrl.replace(/\/$/, ''), address.port);
   await waitForDone(envUrl.replace(/\/$/, ''));
-  // Shut down promptly: server.close() alone waits for idle keep-alive
-  // sockets (up to keepAliveTimeout) before its callback fires, so drop
-  // them first, then give any in-flight request a one-second grace before
-  // closing the rest. /done only flips after the suite finishes, so no
-  // timed request is in flight here.
-  server.closeIdleConnections();
-  const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-  const grace = sleep(1_000).then(() => server.closeAllConnections());
-  await Promise.race([closed, grace.then(() => closed)]);
+  await new Promise<void>((resolve) => server.close(() => resolve()));
   process.exit(0);
 }
 

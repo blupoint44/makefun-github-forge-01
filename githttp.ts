@@ -150,14 +150,8 @@ function sidebandPackets(pack: Buffer): Buffer[] {
   const packets: Buffer[] = [];
   const CHUNK = 65515;
   for (let offset = 0; offset < pack.length; offset += CHUNK) {
-    const end = Math.min(pack.length, offset + CHUNK);
-    // One allocation per packet: 4-byte hex length, band byte, then the chunk.
-    // (pktLine() would concat twice per packet for the same bytes.)
-    const line = Buffer.allocUnsafe(4 + 1 + (end - offset));
-    line.write((line.length).toString(16).padStart(4, '0'), 0, 'ascii');
-    line[4] = 1;
-    pack.copy(line, 5, offset, end);
-    packets.push(line);
+    const chunk = pack.subarray(offset, Math.min(pack.length, offset + CHUNK));
+    packets.push(pktLine(Buffer.concat([Buffer.from([1]), chunk])));
   }
   if (packets.length === 0) packets.push(pktLine(Buffer.from([1])));
   return packets;
@@ -288,38 +282,25 @@ interface PushCommandLine {
   ref: string;
 }
 
-/**
- * Whether every object reachable from `tip` is present in the combined lookup.
- *
- * Objects already in the store proved their closure when they were stored:
- * every store path either validates closure first (receive-pack) or builds
- * new objects only from stored ones (contents API, merges), so a stored
- * object is a leaf here — the walk expands only the pack's fresh objects.
- * Walking the full ancestry on every push was O(history) per push (the
- * bench's 200-push chain re-walked up to 200 commits each time, ~470 us
- * on the last pushes); the pruned walk touches exactly the fresh objects.
- */
+/** Whether every object reachable from `tip` is present in the combined lookup. */
 function closureComplete(forge: Forge, extra: ReadonlyMap<string, StoredObject>, tip: string): boolean {
+  const lookup = (oid: string): StoredObject | undefined => extra.get(oid) ?? forge.getObject(oid);
   const seen = new Set<string>();
   const stack = [tip];
   while (stack.length > 0) {
     const oid = stack.pop()!;
     if (seen.has(oid)) continue;
+    const object = lookup(oid);
+    if (object === undefined) return false;
     seen.add(oid);
-    const fresh = extra.get(oid);
-    if (fresh !== undefined) {
-      if (fresh.type === 'commit') {
-        const view = parseCommit(fresh.data);
-        stack.push(view.tree, ...view.parents);
-      } else if (fresh.type === 'tag') {
-        stack.push(parseTag(fresh.data).object);
-      } else if (fresh.type === 'tree') {
-        for (const entry of parseTree(fresh.data)) if (entry.mode !== '160000') stack.push(entry.oid);
-      }
-      continue;
+    if (object.type === 'commit') {
+      const view = parseCommit(object.data);
+      stack.push(view.tree, ...view.parents);
+    } else if (object.type === 'tag') {
+      stack.push(parseTag(object.data).object);
+    } else if (object.type === 'tree') {
+      for (const entry of parseTree(object.data)) if (entry.mode !== '160000') stack.push(entry.oid);
     }
-    if (forge.getObject(oid) === undefined) return false;
-    // Stored object: its closure was proven at store time; do not descend.
   }
   return true;
 }
